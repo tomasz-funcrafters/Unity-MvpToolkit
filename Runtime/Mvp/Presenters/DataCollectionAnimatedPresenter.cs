@@ -84,9 +84,6 @@ namespace Behc.Mvp.Presenters
         private readonly List<ItemDesc> _removedItems = new List<ItemDesc>();
         private Dictionary<object, int> _itemIdToIndex = new Dictionary<object, int>();
         private List<Rect> _itemRects = new List<Rect>();
-   
-        private Dictionary<IPresenterFactory, Stack<IPresenter>> _presentersPool;
-        private Action<IPresenter> _despawnItemAction;
 
         private ICollectionLayout _layout;
 
@@ -94,6 +91,8 @@ namespace Behc.Mvp.Presenters
         private Func<object, Vector2> _evaluateSize;
         private Func<object, object, float> _evaluateGap;
 
+        private IPoolManager _poolManager;
+        
         private ViewRegion _viewRegion;
 
         private Rect _rect;
@@ -115,7 +114,11 @@ namespace Behc.Mvp.Presenters
             base.Initialize(presenterMap, kernel);
 
             _layout = _layoutOptions.CreateLayout();
-            _despawnItemAction = MovePooledPresenterOffscreen;
+
+            if (_itemPooling)
+            {
+                _poolManager = new PoolManager(presenterMap, RectTransform);
+            }
         }
 
         public override void Bind(object model, IPresenter parent, bool prepareForAnimation)
@@ -168,21 +171,8 @@ namespace Behc.Mvp.Presenters
             _itemPresenters.Clear();
             _itemIdToIndex.Clear();
             _itemRects.Clear();
-
             _viewRegion = null;
-
-            if (_presentersPool != null)
-            {
-                foreach (var kv in _presentersPool)
-                {
-                    foreach (IPresenter presenter in kv.Value)
-                    {
-                        kv.Key.DestroyPresenter(presenter);
-                    }
-                }
-
-                _presentersPool.Clear();
-            }
+            _poolManager.ClearPool();
             
             base.Unbind();
         }
@@ -307,12 +297,6 @@ namespace Behc.Mvp.Presenters
 
             showComplete?.Invoke();
             hideCompleted?.Invoke();
-        }
-        
-        // Used for operations on presenter when they're pooled
-        public void SetDespawnItem(Action<IPresenter> despawnItemAction)
-        {
-            _despawnItemAction = despawnItemAction;
         }
         
         protected override void OnActivate()
@@ -870,20 +854,7 @@ namespace Behc.Mvp.Presenters
             if (!_itemPooling)
                 return PresenterMap.CreatePresenter(model, RectTransform);
 
-            IPresenterFactory factory = PresenterMap.TryGetPresenterFactory(model);
-            if (factory == null)
-                throw new Exception($"No PresenterFactory found for '{model.GetType().Name}' model!");
-
-            IPresenter presenter = null;
-            _presentersPool ??= new Dictionary<IPresenterFactory, Stack<IPresenter>>();
-            if (_presentersPool.TryGetValue(factory, out Stack<IPresenter> pool) && pool.Count > 0)
-            {
-                presenter = pool.Pop();
-            }
-
-            presenter ??= factory.CreatePresenter(RectTransform);
-            presenter.SetUnbindPolicy(UnbindPolicy.KEEP_UNCHANGED);
-            return presenter;
+            return _poolManager.SpawnPresenter(model);
         }
 
         private void DespawnPresenter(object model, IPresenter presenter)
@@ -894,17 +865,7 @@ namespace Behc.Mvp.Presenters
                 return;
             }
 
-            _presentersPool ??= new Dictionary<IPresenterFactory, Stack<IPresenter>>();
-            IPresenterFactory factory = PresenterMap.TryGetPresenterFactory(model);
-
-            if (!_presentersPool.TryGetValue(factory, out Stack<IPresenter> pool))
-            {
-                pool = new Stack<IPresenter>();
-                _presentersPool.Add(factory, pool);
-            }
-
-            pool.Push(presenter);
-            _despawnItemAction.Invoke(presenter);
+            _poolManager.DespawnPresenter(model, presenter);
         }
         
         private void Update()
